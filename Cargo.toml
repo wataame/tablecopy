@@ -1,0 +1,38 @@
+[package]
+name = "tablecopy"
+version = "0.1.0"
+edition = "2021"
+description = "Convert Unicode box-drawing tables to Markdown / Image format"
+license = "MIT"
+repository = "https://github.com/wataame/tablecopy"
+homepage = "https://github.com/wataame/tablecopy"
+keywords = ["clipboard", "table", "markdown", "slack", "terminal"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+arboard = "3"
+clap = { version = "4", features = ["derive"] }
+resvg = "0.44"
+unicode-width = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSThread", "NSRunLoop", "NSDate"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSWindow",
+    "NSView",
+    "NSTextField",
+    "NSColor",
+    "NSFont",
+    "NSVisualEffectView",
+    "NSScreen",
+    "NSGraphics",
+    "NSRunningApplication",
+    "NSResponder",
+] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
