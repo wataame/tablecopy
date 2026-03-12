@@ -88,6 +88,53 @@ fn extract_cells(line: &str) -> Vec<String> {
     cells
 }
 
+/// Check if a character is CJK or fullwidth (no space needed when joining wrapped text).
+fn is_cjk_or_fullwidth(c: char) -> bool {
+    let cp = c as u32;
+    matches!(
+        cp,
+        0x2E80..=0x9FFF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F
+            | 0xFF01..=0xFFEF
+            | 0x20000..=0x2FA1F
+    )
+}
+
+/// Merge multiple physical lines into one logical row.
+/// Used when a table cell wraps across multiple terminal lines.
+fn merge_group(group: &[Vec<String>]) -> Vec<String> {
+    if group.len() == 1 {
+        return group[0].clone();
+    }
+    let max_cols = group.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut merged = Vec::with_capacity(max_cols);
+    for col in 0..max_cols {
+        let mut result = String::new();
+        for row in group {
+            let cell = row.get(col).map(|s| s.trim()).unwrap_or("");
+            if cell.is_empty() {
+                continue;
+            }
+            if result.is_empty() {
+                result = cell.to_string();
+            } else {
+                let last_char = result.chars().last().unwrap();
+                let first_char = cell.chars().next().unwrap();
+                if is_cjk_or_fullwidth(last_char) || is_cjk_or_fullwidth(first_char) {
+                    result.push_str(cell);
+                } else {
+                    result.push(' ');
+                    result.push_str(cell);
+                }
+            }
+        }
+        merged.push(result);
+    }
+    merged
+}
+
 /// Parse input text and extract all Unicode box-drawing tables.
 /// Returns None if no tables are found.
 pub fn parse_tables(input: &str) -> Option<Vec<Table>> {
@@ -98,26 +145,55 @@ pub fn parse_tables(input: &str) -> Option<Vec<Table>> {
     while i < lines.len() {
         // Look for the start of a table (separator line or data line)
         if is_separator_line(lines[i]) || is_data_line(lines[i]) {
-            let mut data_rows: Vec<Vec<String>> = Vec::new();
+            // Group data lines between separator lines
+            let mut groups: Vec<Vec<Vec<String>>> = Vec::new();
+            let mut current_group: Vec<Vec<String>> = Vec::new();
 
-            // Consume all lines that belong to this table
             while i < lines.len() && (is_separator_line(lines[i]) || is_data_line(lines[i])) {
-                if is_data_line(lines[i]) {
+                if is_separator_line(lines[i]) {
+                    if !current_group.is_empty() {
+                        groups.push(current_group);
+                        current_group = Vec::new();
+                    }
+                } else {
                     let cells = extract_cells(lines[i]);
                     if !cells.is_empty() {
-                        data_rows.push(cells);
+                        current_group.push(cells);
                     }
                 }
                 i += 1;
             }
+            if !current_group.is_empty() {
+                groups.push(current_group);
+            }
 
-            // Need at least a header row
-            if !data_rows.is_empty() {
-                let headers = data_rows.remove(0);
-                tables.push(Table {
-                    headers,
-                    rows: data_rows,
-                });
+            if groups.is_empty() {
+                continue;
+            }
+
+            let headers;
+            let rows;
+
+            if groups.len() == 1 {
+                // No separators between rows (or only top/bottom borders)
+                let all_lines = &groups[0];
+                if all_lines.is_empty() {
+                    continue;
+                }
+                headers = all_lines[0].clone();
+                rows = all_lines[1..].to_vec();
+            } else if groups.len() == 2 {
+                // Only header separator, no row separators in body
+                headers = merge_group(&groups[0]);
+                rows = groups[1].clone();
+            } else {
+                // 3+ groups → table has row separators → merge each group
+                headers = merge_group(&groups[0]);
+                rows = groups[1..].iter().map(|g| merge_group(g)).collect();
+            }
+
+            if !headers.is_empty() {
+                tables.push(Table { headers, rows });
             }
         } else {
             i += 1;
@@ -226,6 +302,55 @@ mod tests {
         let tables = parse_tables(input).unwrap();
         assert_eq!(tables[0].headers, vec!["A", "B"]);
         assert_eq!(tables[0].rows.len(), 0);
+    }
+
+    #[test]
+    fn test_multiline_cells() {
+        let input = "\
+┌──────────────────┬───────────────┬──────┬──────────────┐
+│ 分類             │ 内容          │ 行   │ 判定         │
+│                  │               │ 数   │              │
+├──────────────────┼───────────────┼──────┼──────────────┤
+│ 確定仕様         │ 概要、基本    │ ~50  │ 残す         │
+│                  │ 仕様          │ 行   │              │
+├──────────────────┼───────────────┼──────┼──────────────┤
+│ 確定仕様（プロン │ preserve版    │ 12   │ 残す（コアロジ│
+│ プト）           │               │ 行   │ ック）       │
+└──────────────────┴───────────────┴──────┴──────────────┘";
+
+        let tables = parse_tables(input).unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].headers, vec!["分類", "内容", "行数", "判定"]);
+        assert_eq!(tables[0].rows.len(), 2);
+        assert_eq!(
+            tables[0].rows[0],
+            vec!["確定仕様", "概要、基本仕様", "~50行", "残す"]
+        );
+        assert_eq!(
+            tables[0].rows[1],
+            vec!["確定仕様（プロンプト）", "preserve版", "12行", "残す（コアロジック）"]
+        );
+    }
+
+    #[test]
+    fn test_multiline_with_row_separators_preserves_simple_rows() {
+        // Table with row separators but single-line cells should still work
+        let input = "\
+┌────────────┬──────┬──────────┐
+│ 猫種       │ 毛種 │ 毛質     │
+├────────────┼──────┼──────────┤
+│ ミヌエット │ 長短 │ ふわふわ │
+├────────────┼──────┼──────────┤
+│ マンチカン │ 長短 │ やわらか │
+├────────────┼──────┼──────────┤
+│ ベンガル   │ 短毛 │ シルク   │
+└────────────┴──────┴──────────┘";
+
+        let tables = parse_tables(input).unwrap();
+        assert_eq!(tables[0].headers, vec!["猫種", "毛種", "毛質"]);
+        assert_eq!(tables[0].rows.len(), 3);
+        assert_eq!(tables[0].rows[0], vec!["ミヌエット", "長短", "ふわふわ"]);
+        assert_eq!(tables[0].rows[2], vec!["ベンガル", "短毛", "シルク"]);
     }
 
     #[test]
