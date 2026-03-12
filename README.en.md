@@ -118,6 +118,13 @@ tablecopy --install
 
 > **Windows** requires [AutoHotkey v2](https://www.autohotkey.com/).
 
+You can customize the shortcut key after installation:
+
+| OS | How to change |
+|---|---|
+| macOS | System Settings → Keyboard → Keyboard Shortcuts → Services → "TableCopy" |
+| Windows | Edit `%APPDATA%\TableCopy\tablecopy.ahk` directly |
+
 ### Command line
 
 You can also run tablecopy directly without the shortcut:
